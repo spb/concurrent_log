@@ -1,17 +1,14 @@
 {
-	"version": "2.0.0",
 	"tasks": [
 		{
 			"type": "cargo",
-			"subcommand": "build",
+			"command": "build",
 			"problemMatcher": [
 				"$rustc"
 			],
 			"group": "build",
-			"label": "Rust: cargo build",
-			"presentation": {
-				"clear": true
-			}
+			"label": "rust: cargo build",
+			"args": [ "--all-features" ]
 		}
-    ]
+	]
 }

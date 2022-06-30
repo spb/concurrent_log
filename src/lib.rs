@@ -18,6 +18,9 @@ use parking_lot::{
     RwLockUpgradableReadGuard
 };
 
+#[cfg(feature = "serde")]
+mod serialisation;
+
 struct Segment<T>
 {
     layout: Layout,
