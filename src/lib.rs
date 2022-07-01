@@ -167,7 +167,9 @@ impl<T> ConcurrentLog<T>
 
     /// Append an element to the end of the log. This can be done concurrently using
     /// shared references, and is safe to do while read access or iteration is in progress.
-    pub fn push(&self, item: T)
+    ///
+    /// Returns the index of the new item
+    pub fn push(&self, item: T) -> usize
     {
         // AcqRel ordering means that this add will be seen by any other thread accessing `pending_puts`
         // before the addition to `new_index`.
@@ -207,8 +209,9 @@ impl<T> ConcurrentLog<T>
                 // the same as the current number of elements
                 self.safe_size.store(new_next_index, Ordering::Release);
             }
-
         }
+
+        new_index
     }
 
     /// The number of entries currently in the log

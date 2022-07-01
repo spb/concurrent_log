@@ -92,7 +92,7 @@ impl<'de, T: Deserialize<'de>> Visitor<'de> for LogVisitor<'de, T>
 
                     for value in values
                     {
-                        log.push(value)
+                        log.push(value);
                     }
 
                     return Ok(log);
