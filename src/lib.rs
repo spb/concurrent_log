@@ -88,6 +88,7 @@ pub struct ConcurrentLog<T>
     next_index: AtomicUsize,
     safe_size: AtomicUsize,
     pending_puts: AtomicUsize,
+    start_index: usize,
     _marker: PhantomData<T>
 }
 
@@ -112,6 +113,7 @@ impl<T> ConcurrentLog<T>
             next_index: AtomicUsize::new(0),
             pending_puts: AtomicUsize::new(0),
             safe_size: AtomicUsize::new(0),
+            start_index: 0,
             _marker: PhantomData
         }
     }
@@ -125,8 +127,9 @@ impl<T> ConcurrentLog<T>
     /// Take an index into the log and return the segment index and index into that segment
     fn segment_for_index(&self, index: usize) -> (usize, usize)
     {
+        let effective_index = index - self.start_index;
         let segment_size = self.segment_size();
-        (index / segment_size, index % segment_size)
+        (effective_index / segment_size, effective_index % segment_size)
     }
 
     /// Check that the segment for the given index exists, and allocate it
@@ -158,7 +161,7 @@ impl<T> ConcurrentLog<T>
     {
         Iterator {
             log: self,
-            current_index: 0
+            current_index: self.start_index
         }
     }
 
@@ -213,13 +216,25 @@ impl<T> ConcurrentLog<T>
     {
         // Relaxed ordering is OK here; this isn't updated until after a new element is safely
         // constructed, so the worst case is that it returns the value from before the insert
+        self.safe_size.load(Ordering::Relaxed) - self.start_index
+    }
+
+    /// The first currently valid index
+    pub fn start_index(&self) -> usize
+    {
+        self.start_index
+    }
+
+    /// The last currently valid index
+    pub fn last_index(&self) -> usize
+    {
         self.safe_size.load(Ordering::Relaxed)
     }
 
     /// Retrieve an entry from the log
     pub fn get(&self, index: usize) -> Option<&T>
     {
-        if index >= self.safe_size.load(Ordering::Acquire)
+        if index < self.start_index || index >= self.safe_size.load(Ordering::Acquire)
         {
             None
         }
@@ -237,7 +252,7 @@ impl<T> ConcurrentLog<T>
     /// Access an entry mutably.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T>
     {
-        if index >= self.safe_size.load(Ordering::Acquire)
+        if index < self.start_index || index >= self.safe_size.load(Ordering::Acquire)
         {
             None
         }
@@ -257,6 +272,9 @@ impl<T> ConcurrentLog<T>
     /// `trim()` will remove a number of whole segments from the front of the log, and
     /// if the supplied predicate satisfies the conditions listed below, will retain all
     /// elements for which the predicate would return false.
+    ///
+    /// Indices for retained elements will be unchanged; indices that previously referred
+    /// to removed elements will cease to be valid.
     ///
     /// ### The `test` predicate
     ///
@@ -301,10 +319,9 @@ impl<T> ConcurrentLog<T>
 
             if let Some(mut popped) = segments.pop_front()
             {
-                // If we removed a segment, then these indices need to be reduced
+                // If we removed a segment, then our start index needs to be updated
                 // accordingly.
-                self.safe_size.fetch_sub(popped.size, Ordering::Relaxed);
-                self.next_index.fetch_sub(popped.size, Ordering::Relaxed);
+                self.start_index += popped.size;
 
                 // NB we never trim a segment that wasn't full
                 for idx in 0..popped.size
@@ -323,11 +340,11 @@ impl<T> Drop for ConcurrentLog<T>
     fn drop(&mut self)
     {
         let segments = self.segments.get_mut();
-        let size = self.safe_size.get_mut();
+        let mut size = self.safe_size.load(Ordering::Relaxed) - self.start_index;
 
         while let Some(mut segment) = segments.pop_front()
         {
-            for i in 0..std::cmp::min(*size, segment.size)
+            for i in 0..std::cmp::min(size, segment.size)
             {
                 unsafe {
                     segment.get_mut(i).drop_in_place();
@@ -336,7 +353,7 @@ impl<T> Drop for ConcurrentLog<T>
 
             // If this saturates, it's because this was the last segment, so
             // we don't need to worry about inaccuracy
-            *size = size.saturating_sub(segment.size);
+            size = size.saturating_sub(segment.size);
         }
     }
 }
@@ -354,7 +371,10 @@ impl<T: std::fmt::Debug> std::fmt::Debug for ConcurrentLog<T>
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result
     {
         f.write_str("ConcurrentLog ")?;
-        f.debug_list().entries(self.iter()).finish()
+        f.debug_map().entries(
+            (self.start_index..self.safe_size.load(Ordering::Relaxed))
+                .map(|idx| (idx, self.get(idx).unwrap()))
+        ).finish()
     }
 }
 
