@@ -171,6 +171,15 @@ impl<T> ConcurrentLog<T>
     /// Returns the index of the new item
     pub fn push(&self, item: T) -> usize
     {
+        self.push_with_index(item, |_,_| ())
+    }
+
+    /// Append an element to the end of the log, executing the provided closure to provide its
+    /// index before insertion is finalised. The same concurrency guarantees apply as for `push()`.
+    ///
+    /// Returns the index of the new item
+    pub fn push_with_index(&self, mut item: T, update: impl FnOnce(&mut T, usize) -> ()) -> usize
+    {
         // AcqRel ordering means that this add will be seen by any other thread accessing `pending_puts`
         // before the addition to `new_index`.
         self.pending_puts.fetch_add(1, Ordering::AcqRel);
@@ -180,6 +189,9 @@ impl<T> ConcurrentLog<T>
 
         // ensure_segment_for_index manages locking of `segments` itself
         self.ensure_segment(required_segment);
+
+        // Update the new entry with the calculated index
+        update(&mut item, new_index);
 
         unsafe {
             // Safety: put() requires that
