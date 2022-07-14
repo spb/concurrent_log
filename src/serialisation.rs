@@ -70,9 +70,9 @@ impl<'de, T: Deserialize<'de>> Visitor<'de> for LogVisitor<'de, T>
         let mut segment_size = None;
         let mut start_index = None;
 
-        while let Some(key) = map.next_key::<&str>()?
+        while let Some(key) = map.next_key::<String>()?
         {
-            match key
+            match key.as_str()
             {
                 "segment_size" => segment_size = Some(map.next_value()?),
                 "start_index" => start_index = Some(map.next_value()?),
@@ -97,7 +97,7 @@ impl<'de, T: Deserialize<'de>> Visitor<'de> for LogVisitor<'de, T>
 
                     return Ok(log);
                 },
-                _ => return Err(serde::de::Error::unknown_field(key, &["segment_size, start_index, data"]))
+                _ => return Err(serde::de::Error::unknown_field(&key, &["segment_size, start_index, data"]))
             }
         }
 
@@ -135,6 +135,13 @@ mod tests
     }
 
     #[test]
+    fn serialise_empty()
+    {
+        let log = ConcurrentLog::<u32>::with_segment_size(16);
+        assert_eq!(serde_json::to_string(&log).unwrap(), "{\"segment_size\":16,\"start_index\":0,\"data\":[]}")
+    }
+
+    #[test]
     fn deserialize()
     {
         let log: ConcurrentLog<usize> = serde_json::from_str("{\"segment_size\":4,\"start_index\":0,\"data\":[0,1,2,3,4,5,6,7,8,9]}").unwrap();
@@ -145,6 +152,15 @@ mod tests
             assert_eq!(log.get(i), Some(&i));
         }
     }
+
+    #[test]
+    fn deserialize_empty()
+    {
+        let log: ConcurrentLog<usize> = serde_json::from_str("{\"segment_size\":16,\"start_index\":0,\"data\":[]}").unwrap();
+
+        assert_eq!(log.size(), 0);
+    }
+
 
     #[test]
     fn roundtrip()
