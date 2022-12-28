@@ -62,7 +62,7 @@ impl<T> Segment<T>
     // Requires that the element at offset `index` is in bounds but has *not* previously been initialised
     unsafe fn put(&self, index: usize, item: T)
     {
-        (*self.arr.as_ptr().add(index)).write(item);
+        self.arr.as_ptr().add(index).write(MaybeUninit::new(item));
     }
 }
 
