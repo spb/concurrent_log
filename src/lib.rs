@@ -284,7 +284,42 @@ impl<T> ConcurrentLog<T>
     /// the log, then the number of segments trimmed will be unpredictable.
     pub fn trim(&mut self, test: impl Fn(&T) -> bool)
     {
+        self.drain_front_segments(test);
+    }
+
+    /// Remove elements from the front of the log, and return them, probably in order
+    /// to flush them to a disk or database.
+    ///
+    /// `drain_front()` will remove a number of whole segments from the front of the log, and
+    /// if the supplied predicate satisfies the conditions listed below, will retain all
+    /// elements for which the predicate would return false.
+    ///
+    /// Indices for retained elements will be unchanged; indices that previously referred
+    /// to removed elements will cease to be valid.
+    ///
+    /// ### The `test` predicate
+    ///
+    /// If `test` returns `true` for an entry, it should also be true for every entry
+    /// before it in the log, and if it returns `false` for an entry then it should also
+    /// be false for every entry after it. The intention is that it should test the age
+    /// of the entry either via serial number or timestamp, in order to match entries older
+    /// than a particular cut-off point.
+    ///
+    /// If this condition does not hold for the supplied predicate and the entries in
+    /// the log, then the number of segments trimmed will be unpredictable.
+    pub fn drain_front(&mut self, test: impl Fn(&T) -> bool) -> Box<[T]>
+    {
+        self.drain_front_segments(test)
+            .into_iter()
+            .map(Vec::from)
+            .flatten()
+            .collect()
+    }
+
+    fn drain_front_segments(&mut self, test: impl Fn(&T) -> bool) -> Vec<Box<[T]>>
+    {
         let segments = self.segments.get_mut();
+        let mut popped_segments = Vec::new();
 
         loop
         {
@@ -292,13 +327,13 @@ impl<T> ConcurrentLog<T>
             let first_segment = match segments.front()
             {
                 Some(seg) => seg,
-                None => return
+                None => break,
             };
 
             // If we have less than a full segment, don't trim it
             if self.safe_size.load(Ordering::Relaxed) < first_segment.size
             {
-                return;
+                break;
             }
 
             // Now run the supplied test
@@ -310,24 +345,26 @@ impl<T> ConcurrentLog<T>
             // As soon as we reach a segment that's not trimmable, we stop
             if ! should_trim
             {
-                return;
+                break;
             }
 
-            if let Some(mut popped) = segments.pop_front()
+            if let Some(popped) = segments.pop_front()
             {
                 // If we removed a segment, then our start index needs to be updated
                 // accordingly.
                 self.start_index += popped.size;
 
                 // NB we never trim a segment that wasn't full
-                for idx in 0..popped.size
-                {
-                    unsafe {
-                        popped.get_mut(idx).assume_init_drop();
-                    }
-                }
+                popped_segments.push(
+                    Vec::from(popped.arr)
+                        .into_iter()
+                        .map(|item| unsafe { item.into_inner().assume_init() })
+                        .collect(),
+                );
             }
         }
+
+        popped_segments
     }
 }
 
