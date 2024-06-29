@@ -20,40 +20,38 @@ use parking_lot::{
 #[cfg(feature = "serde")]
 mod serialisation;
 
-struct Segment<T>
-{
-    arr: Box<[UnsafeCell<MaybeUninit<T>>]>,
-    size: usize,
-}
+struct Segment<T>(Box<[UnsafeCell<MaybeUninit<T>>]>);
 
 impl<T> Segment<T>
 {
     fn new(size: usize) -> Self
     {
-        Self {
-            size,
-            arr: (0..size).map(|_| UnsafeCell::new(MaybeUninit::uninit())).collect::<Vec<_>>().into_boxed_slice(),
-        }
+        Self((0..size).map(|_| UnsafeCell::new(MaybeUninit::uninit())).collect::<Vec<_>>().into_boxed_slice())
+    }
+
+    fn size(&self) -> usize
+    {
+        self.0.len()
     }
 
     // Requires that the element at offset `index` is in bounds and has previously been initialised
     unsafe fn get<'a>(&self, index: usize) -> &'a T
     {
         // `UnsafeCell` guarantees the pointer isn't null, so unwrap() won't fail
-        &*(self.arr.get_unchecked(index).get().as_ref().unwrap().assume_init_ref() as *const T)
+        &*(self.0.get_unchecked(index).get().as_ref().unwrap().assume_init_ref() as *const T)
     }
 
     // Requires that the element at offset `index` is in bounds
     unsafe fn get_mut(&mut self, index: usize) -> &mut MaybeUninit<T>
     {
-        self.arr.get_unchecked_mut(index).get_mut()
+        self.0.get_unchecked_mut(index).get_mut()
     }
 
     // Requires that the element at offset `index` is in bounds but has *not* previously been initialised
     unsafe fn put(&self, index: usize, item: T)
     {
         // `UnsafeCell` guarantees the pointer isn't null, so unwrap() won't fail
-        self.arr.get_unchecked(index).get().as_mut().unwrap().write(item);
+        self.0.get_unchecked(index).get().as_mut().unwrap().write(item);
     }
 }
 
@@ -296,7 +294,7 @@ impl<T> ConcurrentLog<T>
             };
 
             // If we have less than a full segment, don't trim it
-            if self.safe_size.load(Ordering::Relaxed) < first_segment.size
+            if self.safe_size.load(Ordering::Relaxed) < first_segment.size()
             {
                 return;
             }
@@ -304,7 +302,7 @@ impl<T> ConcurrentLog<T>
             // Now run the supplied test
             let should_trim = unsafe {
                 test(&*first_segment.get(0)) &&
-                    test(&*first_segment.get(first_segment.size - 1))
+                    test(&*first_segment.get(first_segment.size() - 1))
             };
 
             // As soon as we reach a segment that's not trimmable, we stop
@@ -317,10 +315,10 @@ impl<T> ConcurrentLog<T>
             {
                 // If we removed a segment, then our start index needs to be updated
                 // accordingly.
-                self.start_index += popped.size;
+                self.start_index += popped.size();
 
                 // NB we never trim a segment that wasn't full
-                for idx in 0..popped.size
+                for idx in 0..popped.size()
                 {
                     unsafe {
                         popped.get_mut(idx).assume_init_drop();
@@ -340,7 +338,7 @@ impl<T> Drop for ConcurrentLog<T>
 
         while let Some(mut segment) = segments.pop_front()
         {
-            for i in 0..std::cmp::min(size, segment.size)
+            for i in 0..std::cmp::min(size, segment.size())
             {
                 unsafe {
                     segment.get_mut(i).assume_init_drop()
@@ -349,7 +347,7 @@ impl<T> Drop for ConcurrentLog<T>
 
             // If this saturates, it's because this was the last segment, so
             // we don't need to worry about inaccuracy
-            size = size.saturating_sub(segment.size);
+            size = size.saturating_sub(segment.size());
         }
     }
 }
