@@ -2,15 +2,14 @@
 //! and pruning via a mutable reference.
 
 use std::{
-    ptr::NonNull,
-    mem::MaybeUninit,
+    cell::UnsafeCell,
+    collections::VecDeque,
     marker::PhantomData,
-    alloc::*,
+    mem::MaybeUninit,
     sync::atomic::{
         AtomicUsize,
         Ordering,
     },
-    collections::VecDeque,
 };
 
 use parking_lot::{
@@ -23,8 +22,7 @@ mod serialisation;
 
 struct Segment<T>
 {
-    layout: Layout,
-    arr: NonNull<MaybeUninit<T>>,
+    arr: Box<[UnsafeCell<MaybeUninit<T>>]>,
     size: usize,
 }
 
@@ -32,47 +30,30 @@ impl<T> Segment<T>
 {
     fn new(size: usize) -> Self
     {
-        let layout = Layout::array::<T>(size).unwrap();
-
-        let ptr = unsafe {
-            alloc(layout) as *mut MaybeUninit<T>
-        };
-
         Self {
-            layout,
             size,
-            arr: NonNull::new(ptr).unwrap_or_else(|| handle_alloc_error(layout))
+            arr: (0..size).map(|_| UnsafeCell::new(MaybeUninit::uninit())).collect::<Vec<_>>().into_boxed_slice(),
         }
     }
 
     // Requires that the element at offset `index` is in bounds and has previously been initialised
-    unsafe fn get(&self, index: usize) -> *const T
+    unsafe fn get<'a>(&self, index: usize) -> &'a T
     {
-        // `NonNull` guarantees the pointer isn't null, so unwrap() won't fail
-        self.arr.as_ptr().add(index).as_ref().unwrap().as_ptr()
+        // `UnsafeCell` guarantees the pointer isn't null, so unwrap() won't fail
+        &*(self.arr.get_unchecked(index).get().as_ref().unwrap().assume_init_ref() as *const T)
     }
 
-    // Requires that the element at offset `index` is in bounds and has previously been initialised
-    unsafe fn get_mut(&mut self, index: usize) -> *mut T
+    // Requires that the element at offset `index` is in bounds
+    unsafe fn get_mut(&mut self, index: usize) -> &mut MaybeUninit<T>
     {
-        // `NonNull` guarantees the pointer isn't null, so unwrap() won't fail
-        self.arr.as_ptr().add(index).as_mut().unwrap().as_mut_ptr()
+        self.arr.get_unchecked_mut(index).get_mut()
     }
 
     // Requires that the element at offset `index` is in bounds but has *not* previously been initialised
     unsafe fn put(&self, index: usize, item: T)
     {
-        (*self.arr.as_ptr().add(index)).write(item);
-    }
-}
-
-impl<T> Drop for Segment<T>
-{
-    fn drop(&mut self)
-    {
-        unsafe {
-            dealloc(self.arr.as_ptr() as *mut u8, self.layout);
-        }
+        // `UnsafeCell` guarantees the pointer isn't null, so unwrap() won't fail
+        self.arr.get_unchecked(index).get().as_mut().unwrap().write(item);
     }
 }
 
@@ -259,7 +240,7 @@ impl<T> ConcurrentLog<T>
             let segments = self.segments.read();
             let segment = segments.get(segment_index)?;
             unsafe {
-                segment.get(index_in_segment).as_ref()
+                Some(segment.get(index_in_segment))
             }
         }
     }
@@ -277,7 +258,7 @@ impl<T> ConcurrentLog<T>
             let segments = self.segments.get_mut();
             let segment = segments.get_mut(segment_index)?;
             unsafe {
-                segment.get_mut(index_in_segment).as_mut()
+                Some(segment.get_mut(index_in_segment).assume_init_mut())
             }
         }
     }
@@ -342,7 +323,7 @@ impl<T> ConcurrentLog<T>
                 for idx in 0..popped.size
                 {
                     unsafe {
-                        popped.get_mut(idx).drop_in_place();
+                        popped.get_mut(idx).assume_init_drop();
                     }
                 }
             }
@@ -362,7 +343,7 @@ impl<T> Drop for ConcurrentLog<T>
             for i in 0..std::cmp::min(size, segment.size)
             {
                 unsafe {
-                    segment.get_mut(i).drop_in_place();
+                    segment.get_mut(i).assume_init_drop()
                 }
             }
 
