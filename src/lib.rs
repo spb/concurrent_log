@@ -354,7 +354,7 @@ impl<T> ConcurrentLog<T>
 
                 // NB we never trim a segment that wasn't full
                 popped_segments.push(
-                    Vec::from(popped.arr)
+                    Vec::from(popped.0)
                         .into_iter()
                         .map(|item| unsafe { item.into_inner().assume_init() })
                         .collect(),
